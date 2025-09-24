@@ -1,0 +1,7 @@
+.vscode/
+.bsp/
+.metals/
+out/
+target/
+*.log
+*.copy

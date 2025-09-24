@@ -1,0 +1,15 @@
+2025/7/31
+1. 改statemachine的addtr函数 他没有正确的更新self.ts.tr 这里我们吧这个ts.tr遗弃了 只用transferFunc 包括后面的需要用状态更新的逻辑的所有地方 都改用transferFunc 同时也看一下其他类属性是否正确的更新 可以在每一次addtr之后都把一些属性打印出来看
+2. 测试bmc代码 看看bmc跑合约的测试有没有问题 具体在BoundedModelChecking有testbmc代码 如果可以 再看statemachine的bmc函数有没有正确传参
+3. 修改statemachine.synthesize函数 现在的很多策略看上去没有用 要改回之前的简单的版本 可以参考python实现
+
+2025/8/5
+1. synthesis/Synthesizer.scala文件 先不用readfromprogram而是手动用statemachine来写 参考文件中的注释
+2. bmc之前把所有参数打印出来确保构造正确 参考注释
+3. 目前程序好像是死循环 但是目前不知道这个死循环是否是合理的(可能是synthesis的循环轮数过长 这是正常的) 先确认一下这个死循环是死在bmc还是cegis 如果是cegis 是不是正常的在综合
+
+2025/8/8
+1. synthesize实现目前看来应该有问题 最好用一个单独的测试(只看synthsize的输入和输出，就像BoundedModelChecking.scala里面的那些testbmc函数一样 做单元测试)去测试并修改这个函数 其他的函数建议都这样去debug
+2. statemachine.bmc（不是BoundedModelChecking.bmc 这个bmc方法本身应该是没有问题的 之前用单独的输入输出测试过）这个传参对比过了吗
+3. 还是先把synthesizer的部分全部实现完成 也就是之前我做python的部分，然后再看从datalog转换成statemachine的部分吧
+4. 加油 如果你最近时间确实不多 那等返校之后一定要认真做起来了 我个人感觉老师最近没像以前那么push了 因为不是在赶论文 这样的比较轻松的coding时间要珍惜 不要在赶ddl的时候一边被push一边写 这样效率不一定会变高 但是一定压力巨大 对身心都是折磨

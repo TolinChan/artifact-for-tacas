@@ -1,0 +1,11 @@
+// Total balance equals raised before closure (view-based invariant)
+□(totalBalance(n) ∧ raised(r) ∧ closed(b) ∧ b==false → n == r)
+
+// Mutual exclusion between withdraw and refund
+□(¬(♦withdraw() ∧ ♦refund()))
+
+// Withdraw happens only after success (raised >= target)
+□(♦withdraw() → raised(r) ∧ target(t) → r >= t)
+
+// Refund only when raised < target
+□(♦refund() → raised(r) ∧ target(t) → r < t)
