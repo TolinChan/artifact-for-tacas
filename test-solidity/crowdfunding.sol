@@ -48,7 +48,6 @@ contract Crowfunding {
       return n;
   }
   function refund() public    {
-      require((!(closed.b)),"Synthesis guard failed");
       bool r2 = updateRefundOnInsertRecv_refund_r2();
       if(r2==false) {
         revert("Rule condition failed");
