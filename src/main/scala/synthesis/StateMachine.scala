@@ -295,12 +295,11 @@ class StateMachine(name: String, ctx: Context) {
         val firstEval = candidates.getOrElse(trKey, List()).map(c => model.eval(c, false))
         currentEval = firstEval.asInstanceOf[List[Expr[BoolSort]]]
       } else {
-        // 不提前返回；与Python一致保留空评估
         currentEval = List()
       }
     }
 
-    // 与Python一致：每个轨迹元素都追加一行，并在非最后一步推进
+ 
     var i = 0
     while (i < trace.size) {
       if (trace(i).nonEmpty) {
@@ -979,24 +978,28 @@ class StateMachine(name: String, ctx: Context) {
           // Skip other relation types
       }
     }
-    // 若 Datalog 层未提供 totalBalance，则显式添加一个 BitVec 变量用于 Solidity 注入映射
-    if (!states.contains("totalBalance")) {
-      val sort = ctx.mkBitVecSort(256)
-      addState("totalBalance", sort)
-    }
+
   }
   
   // 使用Z3Helper.typeToSort替代自定义的getZ3Sort
   
   def extractTransitions(imperative: imp.ImperativeAbstractProgram): Unit = {
-    imperative.onStatements.foreach { onStatement =>
+    imperative.onStatements.zipWithIndex.foreach { case (onStatement, idx) =>
       val relName = onStatement.relation.name
       val baseName = if (relName.startsWith("recv_")) relName.substring(5) else relName
       // 使用 ruleId 使转移名唯一，避免同名覆盖
       val trName = s"${baseName}_${onStatement.ruleId}"
       val parameters = onStatement.literal.fields.map(field => Z3Helper.paramToConst(ctx, field, "")._1)
       val guard = ctx.mkBool(true) // Default guard
-      val transferFunc = createTransferFunction(onStatement)
+      val transferFunc = try {
+        createTransferFunction(onStatement)
+      } catch {
+        case ex: Throwable =>
+          println(s"[DEBUG][extractTransitions] Failed on statement #$idx for relation $relName rule ${onStatement.ruleId}")
+          println(s"[DEBUG][extractTransitions] Statement literal: ${onStatement.literal}")
+          println(s"[DEBUG][extractTransitions] Statement body: ${onStatement.statement}")
+          throw ex
+      }
       
       addTr(trName, parameters, guard, transferFunc)
       
@@ -1056,16 +1059,33 @@ class StateMachine(name: String, ctx: Context) {
     val relation = matchField.relation
     val keys = matchField.keys.map(field => Z3Helper.paramToConst(ctx, field, "")._1)
     val value = Z3Helper.paramToConst(ctx, matchField.p, "")._1
-    
+
     relation match {
-      case sr: datalog.SimpleRelation =>
-        val keyType = Z3Helper.typeToSort(ctx, sr.sig.head)
-        val valueType = Z3Helper.typeToSort(ctx, sr.sig.last)
-        val arrayExpr = ctx.mkConst(relation.name, ctx.mkArraySort(keyType, valueType))
-        val selectExpr = ctx.mkSelect(arrayExpr.asInstanceOf[Expr[ArraySort[Sort, Sort]]], keys.head.asInstanceOf[Expr[Sort]])
-        ctx.mkEq(selectExpr, value.asInstanceOf[Expr[Sort]])
+      case sr: datalog.SimpleRelation if sr.sig.nonEmpty =>
+        val keyTypes = sr.sig.dropRight(1)
+        val valueType = sr.sig.last
+        if (keyTypes.isEmpty) {
+          val valueSort = Z3Helper.typeToSort(ctx, valueType)
+          val stateExpr = ctx.mkConst(relation.name, valueSort)
+          ctx.mkEq(stateExpr, value.asInstanceOf[Expr[Sort]])
+        } else {
+          val arrayExpr = createArrayExpr(relation.name, keyTypes, valueType)
+          val selectExpr = nestedSelect(arrayExpr, keyTypes, keys.take(keyTypes.length))
+          val valueExpr = value.asInstanceOf[Expr[Sort]]
+          val expectedSort = Z3Helper.typeToSort(ctx, valueType)
+          if (valueExpr.getSort != expectedSort) {
+            println(s"[DEBUG][convertMatchRelationFieldToZ3] Sort mismatch for relation ${relation.name}: expected ${expectedSort}, actual ${valueExpr.getSort}")
+          }
+          ctx.mkEq(selectExpr.asInstanceOf[Expr[Sort]], valueExpr)
+        }
+
+      case sr: datalog.SingletonRelation if sr.sig.nonEmpty =>
+        val valueSort = Z3Helper.typeToSort(ctx, sr.sig.head)
+        val stateExpr = ctx.mkConst(relation.name, valueSort)
+        ctx.mkEq(stateExpr, value.asInstanceOf[Expr[Sort]])
+
       case _ =>
-        ctx.mkBool(true) // Default fallback
+        ctx.mkBool(true)
     }
   }
   
@@ -1159,42 +1179,37 @@ class StateMachine(name: String, ctx: Context) {
     val relation = literal.relation
     val fields = literal.fields
     
+    if (fields.isEmpty) {
+      println(s"[DEBUG][createInsertLogic] Relation ${relation.name} has empty fields: literal=${literal}")
+      return ctx.mkBool(true)
+    }
+
     relation match {
-      case sr: datalog.SimpleRelation =>
-        if (sr.sig.length > 1) {
-          // Multi-field relation: update array
-          val keyTypes = sr.sig.take(sr.sig.length - 1)
-          val valueType = sr.sig.last
+      case sr: datalog.SimpleRelation if sr.sig.nonEmpty =>
+        val keyTypes = sr.sig.dropRight(1)
+        val valueType = sr.sig.last
+        if (keyTypes.isEmpty) {
+          val valueExpr = Z3Helper.paramToConst(ctx, fields.head, "")._1
+          val stateExpr = ctx.mkConst(relation.name, Z3Helper.typeToSort(ctx, valueType))
+          val stateNextExpr = ctx.mkConst(s"${relation.name}_next", Z3Helper.typeToSort(ctx, valueType))
+          ctx.mkEq(stateNextExpr, valueExpr)
+        } else {
           val keyExprs = keyTypes.zip(fields.take(keyTypes.length)).map {
             case (_, field) => Z3Helper.paramToConst(ctx, field, "")._1
           }
           val valueExpr = Z3Helper.paramToConst(ctx, fields.last, "")._1
-          
-          // Create array with correct key and value types
-          val keyType = Z3Helper.typeToSort(ctx, keyTypes.head)
-          val valueZ3Type = Z3Helper.typeToSort(ctx, valueType)
-          val arrayType = ctx.mkArraySort(keyType, valueZ3Type)
-          val arrayExpr = ctx.mkConst(relation.name, arrayType)
-          val arrayNextExpr = ctx.mkConst(s"${relation.name}_next", arrayType)
-          
-          // Create the store operation and return the equality
-          val storeExpr = ctx.mkStore(arrayExpr.asInstanceOf[Expr[ArraySort[Sort, Sort]]], 
-                                    keyExprs.head.asInstanceOf[Expr[Sort]], valueExpr.asInstanceOf[Expr[Sort]])
-          ctx.mkEq(arrayNextExpr, storeExpr)
-        } else {
-          // Single field relation: update single value
-          val valueExpr = Z3Helper.paramToConst(ctx, fields.head, "")._1
-          val stateExpr = ctx.mkConst(relation.name, Z3Helper.typeToSort(ctx, sr.sig.head))
-          val stateNextExpr = ctx.mkConst(s"${relation.name}_next", Z3Helper.typeToSort(ctx, sr.sig.head))
-          ctx.mkEq(stateNextExpr, valueExpr)
+          val arrayExpr = createArrayExpr(relation.name, keyTypes, valueType)
+          val arrayNextExpr = createArrayExpr(s"${relation.name}_next", keyTypes, valueType)
+          val storeExpr = storeNested(arrayExpr, keyTypes, keyExprs, valueExpr)
+          ctx.mkEq(arrayNextExpr.asInstanceOf[Expr[Sort]], storeExpr.asInstanceOf[Expr[Sort]])
         }
-        
+
       case sr: datalog.SingletonRelation =>
         val valueExpr = Z3Helper.paramToConst(ctx, fields.head, "")._1
         val stateExpr = ctx.mkConst(relation.name, Z3Helper.typeToSort(ctx, sr.sig.head))
         val stateNextExpr = ctx.mkConst(s"${relation.name}_next", Z3Helper.typeToSort(ctx, sr.sig.head))
         ctx.mkEq(stateNextExpr, valueExpr)
-        
+
       case _ =>
         ctx.mkBool(true) // Default fallback
     }
@@ -1245,6 +1260,32 @@ class StateMachine(name: String, ctx: Context) {
     val paramExpr = Z3Helper.paramToConst(ctx, param.p, "")._1
     val exprValue = Z3Helper.functorExprToZ3(ctx, expr.asInstanceOf[datalog.Arithmetic], "")
     ctx.mkEq(paramExpr, exprValue)
+  }
+
+  private def createArrayExpr(name: String, keyTypes: Seq[datalog.Type], valueType: datalog.Type): Expr[_] = {
+    val arraySort = keyTypes.reverse.foldLeft(Z3Helper.typeToSort(ctx, valueType)) { (acc, keyType) =>
+      ctx.mkArraySort(Z3Helper.typeToSort(ctx, keyType), acc)
+    }
+    ctx.mkConst(name, arraySort)
+  }
+
+  private def nestedSelect(arrayExpr: Expr[_], keyTypes: Seq[datalog.Type], keyExprs: Seq[Expr[_]]): Expr[_] = {
+    var current = arrayExpr
+    keyExprs.foreach { keyExpr =>
+      current = ctx.mkSelect(current.asInstanceOf[Expr[ArraySort[Sort, Sort]]], keyExpr.asInstanceOf[Expr[Sort]])
+    }
+    current
+  }
+
+  private def storeNested(arrayExpr: Expr[_], keyTypes: Seq[datalog.Type], keyExprs: Seq[Expr[_]], valueExpr: Expr[_]): Expr[_] = {
+    def helper(expr: Expr[_], keys: List[Expr[_]]): Expr[_] = keys match {
+      case Nil => valueExpr
+      case key :: rest =>
+        val arr = expr.asInstanceOf[Expr[ArraySort[Sort, Sort]]]
+        val stored = ctx.mkStore(arr, key.asInstanceOf[Expr[Sort]], helper(ctx.mkSelect(arr, key.asInstanceOf[Expr[Sort]]), rest).asInstanceOf[Expr[Sort]])
+        stored
+    }
+    helper(arrayExpr, keyExprs.toList)
   }
 
   // ===== Z3 -> Solidity (minimal) =====

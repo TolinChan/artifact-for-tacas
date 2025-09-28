@@ -1,0 +1,2 @@
+// At most one proposal can win
+ALWAYSNOT(wins(p1, true) AND wins(p2, true) AND p1 != p2)

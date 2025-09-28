@@ -1,5 +1,3 @@
-// Adopted from: https://etherscan.io/token/0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE#code
-
 // parameters
 .decl *owner(p: address)
 
@@ -76,19 +74,47 @@ spentTotal(o,s,m) :- transferFrom(o,_,s,_), m = sum n: transferFrom(o,_,s,n).
 
 allowance(o,s,n) :- allowanceTotal(o,s,m), spentTotal(o,s,l), n := m-l.
 
-.decl recv_burnFrom(p:address, n:uint)
-.decl burnFrom(p:address, from:address, n:uint)
 
-burnFrom(s,p,n) :- recv_burnFrom(p,n), msgSender(s), p!=0,
-                   balanceOf(p,m), m >= n,
-                   allowance(p,s,k), k >= m.
-transferFrom(s,p,0,n) :- burnFrom(s,p,n).
-burn(p,n) :- burnFrom(_,p,n).
+// ERC777 functionalities
+.decl recv_approveOperator(o: address)
+.decl recv_revokeDefaultOperator(o: address)
+.decl operators(p:address , o:address, b: bool)[0,1]
+.decl revokedDefaultOperator(p:address , o:address, b: bool)[0,1]
+.decl defaultOperator(p:address, b:bool)[0]
 
-.public recv_burnFrom
+.public recv_revokeDefaultOperator
+.public recv_approveOperator
+.public operators(2)
+.public revokedDefaultOperator(2)
+.public defaultOperator(1)
+
+operators(p,o,true) :- recv_approveOperator(o), msgSender(p), defaultOperator(o, false), p!=o.
+revokedDefaultOperator(o,p,false) :- recv_approveOperator(o), msgSender(p), defaultOperator(o,true), p!=o.
+
+revokedDefaultOperator(p,o,true) :- recv_revokeDefaultOperator(o), msgSender(p), defaultOperator(o,true), p!=o.
+operators(p,o,false) :- recv_revokeDefaultOperator(o), msgSender(p), defaultOperator(o,false), p!=o.
+
+.decl recv_operatorSend(o:address,r:address,n:uint,data:uint,operatorData:uint)
+.decl recv_operatorBurn(p:address,n:uint,data:uint,operatorData:uint)
+.decl operatorSend(o:address,r:address,s:address,n:uint,data:uint,operatorData:uint)
+.decl operatorBurn(p:address,s:address,n:uint,data:uint,operatorData:uint)
+
+operatorSend(o,r,s,n,data,operatorData) :- recv_operatorSend(o,r,n,data,operatorData), msgSender(s), operators(o,s,true),
+                                           balanceOf(o,m), m >= n, r!=0, n>0.
+operatorSend(o,r,o,n,data,operatorData) :- recv_operatorSend(o,r,n,data,operatorData), msgSender(o),
+                                            balanceOf(o,m), m >= n, r!=0, n>0.
+operatorSend(o,r,s,n,data,operatorData) :- recv_operatorSend(o,r,n,data,operatorData), msgSender(s),
+                                             defaultOperator(s,true), revokedDefaultOperator(o,s,false),
+                                             balanceOf(o,m), m >= n, r!=0, n>0.
+transfer(o,r,n) :- operatorSend(o,r,_,n,_,_).
+
+operatorBurn(p,s,n,data,operatorData) :- recv_operatorBurn(p,n,data,operatorData), msgSender(s), operators(p,s,true),
+                                         balanceOf(p,m), m >= n, p!=0 , n>0.
+operatorBurn(p,s,n,data,operatorData) :- recv_operatorBurn(p,n,data,operatorData), msgSender(p),
+                                         balanceOf(p,m), m >= n, p!=0, n>0.
+operatorBurn(p,s,n,data,operatorData) :- recv_operatorBurn(p,n,data,operatorData), msgSender(s),
+                                         defaultOperator(s,true), revokedDefaultOperator(p,s,false),
+                                         balanceOf(p,m), m >= n, p!=0, n>0.
+burn(p,n) :- operatorBurn(p,_,n,_,_).
 
 // Property helpers
-.decl *totalBalances(m: uint)
-
-totalBalances(0) :- constructor().
-totalBalances(s) :- s = sum n: balanceOf(_,n).

@@ -1,0 +1,2 @@
+// No release before start time
+ALWAYS(released(e) AND now(t) AND start(a) IMPLIES (t >= a OR e == 0))

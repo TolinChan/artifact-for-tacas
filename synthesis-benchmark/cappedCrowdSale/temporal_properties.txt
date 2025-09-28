@@ -1,18 +1,8 @@
+// Finalization must occur only at end or above cap
+ALWAYS(transaction(recv_finalize) AND now(t) AND end(e) AND raised(r) AND cap(c) IMPLIES (t >= e OR r >= c))
 
-// Ensuring total balances do not exceed total supply
-□(totalSupply(n) ∧ balanceSum(s) → s ≤ n)
+// Finalization can happen only once
+ALWAYS(onceFinalize(true) IMPLIES NOT transaction(recv_finalize))
 
-// Ensuring allowance cannot be exceeded
-□(allowance(o, s, n) ∧ transferFrom(o, r, s, m) → m ≤ n)
-
-// Ensuring no negative balances
-□(balanceOf(p, n) → n ≥ 0)
-
-// Ensuring finalization only occurs once
-□(onceFinalize(true) → ¬♦(finalize()))
-
-// Ensuring no token purchase after finalization
-□(onceFinalize(true) → ¬♦(buyToken(_, _)))
-
-// Ensuring illegal finalization is prevented
-□(onceFinalize(true) → now(t) ∧ end(e) ∧ t ≥ e ∨ raised(r) ∧ cap(c) ∧ r ≥ c)
+// No token purchases after finalization
+ALWAYS(onceFinalize(true) IMPLIES NOT transaction(recv_buyToken))

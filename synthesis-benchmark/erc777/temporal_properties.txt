@@ -1,0 +1,2 @@
+// Operators of default operators must not be directly set
+ALWAYSNOT(defaultOperator(o, true) AND operators(p, o, true))

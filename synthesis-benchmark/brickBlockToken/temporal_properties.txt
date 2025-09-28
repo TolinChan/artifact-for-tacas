@@ -1,0 +1,11 @@
+// Once the token is dead it must remain paused
+ALWAYSNOT(dead(true) AND paused(false))
+
+// Token distribution cannot occur after sale ends
+ALWAYS(onceEndSale(true) IMPLIES NOTtransaction(recv_distributeTokens))
+
+// Transfers allowed only after unpause
+ALWAYS(onceUnpaused(false) IMPLIES NOTtransaction(recv_transfer))
+
+// Evacuation allowed only after upgrade
+ALWAYS(onceUpgrade(false) IMPLIES NOTtransaction(recv_evacuate))

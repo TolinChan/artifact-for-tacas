@@ -45,6 +45,7 @@ object Parser {
     val imperative = impTranslator.translate()
 
     println(s"Translated to imperative program with ${imperative.onStatements.size} statements")
+    println(s"[DEBUG] First statement sample: ${imperative.onStatements.headOption.map(_.toString).getOrElse("<empty>")}")
 
     // 填充状态与转移
     stateMachine.extractStateVariables(imperative)
@@ -68,17 +69,20 @@ object Parser {
     stateMachine.addOnce()
   }
 
+
   /**
-   * 从示例轨迹文件构建与 StateMachine 绑定的正例轨迹。
-   * 轨迹格式示例：
-   *   recv_invest()@1;
-   *   invest(p=0x114514, n=500)@2;
-   * 空行分隔多条轨迹。会忽略 constructor 行。
-   * 每步产出：[ (= func "event"), (= now ts), (= param value) ... ]
+   * 将 temporal_properties.txt 的常见 ♦/互斥 模式绑定到 once 变量；无法识别的行跳过。
+   * 支持的形式（忽略外层 □）：
+   *  - ¬(♦A() ∧ ♦B())
+   *  - (♦A() → ¬♦B())
    */
+  def parseTemporalPropertiesBound(stateMachine: StateMachine, propertyPath: String, ctx: Context): List[Expr[BoolSort]] = {
+    TemporalPropertyParser.parseTemporalPropertiesBound(stateMachine, propertyPath, ctx)
+  }
+
   def parsePositiveTracesBound(stateMachine: StateMachine, tracePath: String, ctx: Context): List[List[List[Expr[BoolSort]]]] = {
     val raw = Source.fromFile(tracePath).getLines().toList
-    val lines = raw.map(_.trim).filter(l => l.nonEmpty || l == "") // 保留空行用于分段
+    val lines = raw.map(_.trim).filter(l => l.nonEmpty || l == "")
     val traces = scala.collection.mutable.ListBuffer[List[List[Expr[BoolSort]]]]()
     var current: List[List[Expr[BoolSort]]] = List()
 
@@ -86,24 +90,20 @@ object Parser {
     val kvPattern = """(\w+)=(0x[0-9a-fA-F]+|\d+)""".r
 
     def parseNum(v: String): Expr[BitVecSort] = {
-      // 使用十进制字符串传给 Z3；将 0x 前缀转换为十进制字符串以避免 parser error
-      val decStr = if (v.startsWith("0x") || v.startsWith("0X")) {
-        new java.math.BigInteger(v.substring(2), 16).toString
-      } else v
+      val decStr = if (v.startsWith("0x") || v.startsWith("0X")) new java.math.BigInteger(v.substring(2), 16).toString else v
       ctx.mkBV(decStr, 256)
     }
 
     def flush(): Unit = {
-      if (current.nonEmpty) traces += current; current = List()
+      if (current.nonEmpty) traces += current
+      current = List()
     }
 
     lines.foreach { rawLine =>
       if (rawLine.isEmpty) {
         flush()
-      } else if (rawLine.startsWith("//")) {
-        ()
-      } else {
-        // 去掉行尾内联注释
+      } else if (rawLine.startsWith("//")) ()
+      else {
         val line = rawLine.replaceFirst("\\s*//.*$", "").trim
         line match {
           case l if l.isEmpty => ()
@@ -122,7 +122,7 @@ object Parser {
                     Some(ctx.mkEq(lhs, rhs).asInstanceOf[Expr[BoolSort]])
                   case _ => None
                 }
-              val step = (List(funcEq, nowEq) ++ paramEqs)
+              val step = List(funcEq, nowEq) ++ paramEqs
               current = current :+ step
             }
           case other => throw new IllegalArgumentException(s"Invalid trace line: $other")
@@ -131,144 +131,5 @@ object Parser {
     }
     flush()
     traces.toList
-  }
-
-  /**
-   * 将 temporal_properties.txt 的常见 ♦/互斥 模式绑定到 once 变量；无法识别的行跳过。
-   * 支持的形式（忽略外层 □）：
-   *  - ¬(♦A() ∧ ♦B())
-   *  - (♦A() → ¬♦B())
-   */
-  def parseTemporalPropertiesBound(stateMachine: StateMachine, propertyPath: String, ctx: Context): List[Expr[BoolSort]] = {
-    val rawAll = Source.fromFile(propertyPath).getLines().toList
-    val lines = rawAll.map(_.trim).filter(l => l.nonEmpty && !l.startsWith("//"))
-    val results = scala.collection.mutable.ListBuffer[Expr[BoolSort]]()
-
-    def findOnceVar(eventName: String): Option[Expr[BoolSort]] = {
-      val base = eventName.toLowerCase
-      // 优先使用 traceEventMapping（event -> 转移名）
-      val mappedTr = stateMachine.traceEventMapping.getOrElse(base, "")
-      val candidates: List[String] =
-        if (mappedTr.nonEmpty) List(mappedTr)
-        else stateMachine.transitions.filter(t => t.toLowerCase.contains(base))
-      val found = candidates.view.flatMap { tr =>
-        // once 映射的 key 是转移名（tr），而不是 'once_tr'
-        val byTrKey = stateMachine.once.get(tr).map(_._1.asInstanceOf[Expr[BoolSort]])
-        val byOnceName = stateMachine.once.get(s"once_${tr}").map(_._1.asInstanceOf[Expr[BoolSort]])
-        byTrKey.orElse(byOnceName)
-      }.headOption
-      found
-    }
-
-    def stripBox(s: String): String = {
-      if (s.startsWith("□(" ) && s.endsWith(")")) s.substring(2, s.length-1).trim else s
-    }
-
-    // 事件提取（容忍 ♦event() / ♦(event()) / 大小写）
-    def extractEventName(token: String): Option[String] = {
-      val s = token.replaceAll("\\s+", "")
-      val idx = s.indexOf('♦')
-      if (idx >= 0) {
-        val after = s.substring(idx + 1)
-        // (event()) 或 event()
-        val inner = if (after.startsWith("(")) after.drop(1) else after
-        val nameEnd = inner.indexOf('(')
-        if (nameEnd > 0) Some(inner.substring(0, nameEnd).toLowerCase) else None
-      } else None
-    }
-
-    def getNumState(name: String): Option[Expr[_]] = {
-      val key = name
-      stateMachine.states.get(key).map(_._1)
-    }
-
-    def mkLt(a: Expr[_], b: Expr[_]): Expr[BoolSort] = (a.getSort, b.getSort) match {
-      case (_: IntSort, _: IntSort) => ctx.mkLt(a.asInstanceOf[Expr[IntSort]], b.asInstanceOf[Expr[IntSort]])
-      case (_: BitVecSort, _: BitVecSort) => ctx.mkBVULT(a.asInstanceOf[Expr[BitVecSort]], b.asInstanceOf[Expr[BitVecSort]])
-      case _ => ctx.mkBool(true)
-    }
-    def mkLe(a: Expr[_], b: Expr[_]): Expr[BoolSort] = (a.getSort, b.getSort) match {
-      case (_: IntSort, _: IntSort) => ctx.mkLe(a.asInstanceOf[Expr[IntSort]], b.asInstanceOf[Expr[IntSort]])
-      case (_: BitVecSort, _: BitVecSort) => ctx.mkBVULE(a.asInstanceOf[Expr[BitVecSort]], b.asInstanceOf[Expr[BitVecSort]])
-      case _ => ctx.mkBool(true)
-    }
-    def mkGt(a: Expr[_], b: Expr[_]): Expr[BoolSort] = (a.getSort, b.getSort) match {
-      case (_: IntSort, _: IntSort) => ctx.mkGt(a.asInstanceOf[Expr[IntSort]], b.asInstanceOf[Expr[IntSort]])
-      case (_: BitVecSort, _: BitVecSort) => ctx.mkBVUGT(a.asInstanceOf[Expr[BitVecSort]], b.asInstanceOf[Expr[BitVecSort]])
-      case _ => ctx.mkBool(true)
-    }
-    def mkGe(a: Expr[_], b: Expr[_]): Expr[BoolSort] = (a.getSort, b.getSort) match {
-      case (_: IntSort, _: IntSort) => ctx.mkGe(a.asInstanceOf[Expr[IntSort]], b.asInstanceOf[Expr[IntSort]])
-      case (_: BitVecSort, _: BitVecSort) => ctx.mkBVUGE(a.asInstanceOf[Expr[BitVecSort]], b.asInstanceOf[Expr[BitVecSort]])
-      case _ => ctx.mkBool(true)
-    }
-    def mkEq(a: Expr[_], b: Expr[_]): Expr[BoolSort] = ctx.mkEq(a.asInstanceOf[Expr[_]], b.asInstanceOf[Expr[_]]).asInstanceOf[Expr[BoolSort]]
-
-    def pickCompareOp(s: String): Option[String] = {
-      // 仅检查最后一个箭头右侧的比较子句
-      val rhsLast = s.split("→").lastOption.getOrElse(s).trim
-      val noSpace = rhsLast.replaceAll("\\s+", "")
-      if (noSpace.contains(">=" ) || noSpace.contains("≥")) Some(">=")
-      else if (noSpace.contains("<=") || noSpace.contains("≤")) Some("<=")
-      else if (noSpace.contains("==")) Some("==")
-      else if (noSpace.contains("=")) Some("==")
-      else if (noSpace.contains(">")) Some(">")
-      else if (noSpace.contains("<")) Some("<")
-      else None
-    }
-
-    lines.foreach { rawLine =>
-      val line = stripBox(rawLine)
-      // Pattern 1: ¬(♦A() ∧ ♦B())
-      val andPat = """^¬\s*\(\s*♦\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*∧\s*♦\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\)$""".r
-      // Pattern 2: ♦A() → ¬♦B()  以及混合括号：左无右有 / 左有右无
-      val impPat = """^♦\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*→\s*¬\s*♦\s*\(?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\)?\s*$""".r
-      // Pattern 3: 括号对称：♦(A()) → ¬♦(B())
-      val impPat2 = """^♦\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\)\s*→\s*¬\s*♦\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\)\s*$""".r
-      // Pattern 4: ♦Event() → raised(r) ∧ target(t) → r < t  （简化为 Event → raised < target）
-      val impRaisedTarget = """^♦\s*\(?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\)?\s*→\s*(.*)$""".r
-
-      line match {
-        case andPat(a, b) =>
-          (findOnceVar(a), findOnceVar(b)) match {
-            case (Some(oa), Some(ob)) =>
-              results += ctx.mkNot(ctx.mkAnd(oa, ob)).asInstanceOf[Expr[BoolSort]]
-            case _ => ()
-          }
-        case impPat(a, b) =>
-          (findOnceVar(a), findOnceVar(b)) match {
-            case (Some(oa), Some(ob)) =>
-              results += ctx.mkImplies(oa, ctx.mkNot(ob)).asInstanceOf[Expr[BoolSort]]
-            case _ => ()
-          }
-        case impPat2(a, b) =>
-          (findOnceVar(a), findOnceVar(b)) match {
-            case (Some(oa), Some(ob)) =>
-              results += ctx.mkImplies(oa, ctx.mkNot(ob)).asInstanceOf[Expr[BoolSort]]
-            case _ => ()
-          }
-        case impRaisedTarget(ev, rhs) =>
-          val hasRaised = rhs.toLowerCase.contains("raised")
-          val hasTarget = rhs.toLowerCase.contains("target")
-          (findOnceVar(ev), getNumState("raised"), getNumState("target")) match {
-            case (Some(oev), Some(raised), Some(target)) if hasRaised && hasTarget =>
-              val opOpt = pickCompareOp(rhs)
-              val cmp: Expr[BoolSort] = opOpt match {
-                case Some("<")   => mkLt(raised, target)
-                case Some("<=")  => mkLe(raised, target)
-                case Some(">")   => mkGt(raised, target)
-                case Some(">=")  => mkGe(raised, target)
-                case Some("==")  => mkEq(raised, target)
-                case _             => mkLt(raised, target) // 默认回退
-              }
-              results += ctx.mkImplies(oev, cmp).asInstanceOf[Expr[BoolSort]]
-            case _ if rhs.toLowerCase.contains("totalbalance") && getNumState("raised").nonEmpty =>
-              ()
-            case _ => ()
-          }
-        case _ => () // 其他行暂不支持
-      }
-    }
-    results.toList
   }
 }

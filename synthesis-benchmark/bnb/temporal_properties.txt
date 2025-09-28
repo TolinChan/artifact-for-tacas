@@ -1,8 +1,2 @@
-// Ensuring total balances are within supply limits
-□(totalBalances(n) ∧ freezeSum(f) ∧ totalSupply(m) → n + f ≤ m)
-
-// Ensuring allowance cannot be exceeded
-□(allowance(o,s,n) ∧ transferFrom(o,r,s,m) → m ≤ n)
-
-// Ensuring no negative balances
-□(balanceOf(p,n) → n ≥ 0)
+// Sum of active and frozen balances must not exceed total supply
+ALWAYS(totalBalances(s) AND freezeSum(f) AND totalSupply(n) IMPLIES s + f <= n)

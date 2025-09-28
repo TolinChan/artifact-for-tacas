@@ -1,0 +1,5 @@
+// Finalization only after end time
+ALWAYS(onceFinalize(true) IMPLIES now(t) AND end(e) IMPLIES t >= e)
+
+// No purchases after finalization
+ALWAYS(onceFinalize(true) IMPLIES NOT transaction(recv_buyToken))

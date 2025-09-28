@@ -1,0 +1,11 @@
+// Total balance equals raised before closure (view-based invariant)
+ALWAYS(totalBalance(m) AND raised(r) AND closed(b) AND b == false IMPLIES m == r)
+
+// Mutual exclusion between withdraw and refund
+ALWAYSNOT(onceWithdraw(true) AND onceRefund(true))
+
+// Withdraw happens only after success (raised >= target)
+ALWAYS(onceWithdraw(true) IMPLIES raised(r) AND target(t) IMPLIES r >= t)
+
+// Refund only when raised < target
+ALWAYS(onceRefund(true) IMPLIES raised(r) AND target(t) IMPLIES r < t)

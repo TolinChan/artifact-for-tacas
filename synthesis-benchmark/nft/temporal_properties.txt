@@ -1,0 +1,2 @@
+// Every existing token must have a non-zero owner
+ALWAYS(exists(tokenId, true) IMPLIES ownerOf(tokenId, o) AND o != 0)

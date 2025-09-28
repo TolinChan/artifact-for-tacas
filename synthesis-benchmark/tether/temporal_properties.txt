@@ -1,12 +1,2 @@
-
-// Ensuring total balances do not exceed total supply
-□(totalSupply(n) ∧ totalBalances(s) → s ≤ n)
-
-// Ensuring no negative balances
-□(balanceOf(p, n) → n ≥ 0)
-
-// Ensuring total balances match total supply
-□(totalBalances(s) ∧ totalSupply(n) → s == n)
-
-// Ensuring transfers respect blacklisting
-□(isBlackListed(p, true) → ¬transfer(p, _, _))
+// Total balances must equal total supply
+ALWAYS(totalBalances(s) AND totalSupply(n) IMPLIES s == n)

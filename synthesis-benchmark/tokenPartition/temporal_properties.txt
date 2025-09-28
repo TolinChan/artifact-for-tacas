@@ -1,0 +1,2 @@
+// Each partition's balances must equal its total supply
+ALWAYS(totalBalancesByPartition(q, s) AND totalSupplyByPartition(q, n) IMPLIES s == n)

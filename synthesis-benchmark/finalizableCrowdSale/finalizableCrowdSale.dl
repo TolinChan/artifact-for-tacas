@@ -74,8 +74,27 @@ spentTotal(o,s,m) :- transferFrom(o,_,s,_), m = sum n: transferFrom(o,_,s,n).
 
 allowance(o,s,n) :- allowanceTotal(o,s,m), spentTotal(o,s,l), n := m-l.
 
-// Property helpers
-.decl *totalBalances(m: uint)
+///////////////////////////////////////////////////////////
 
-totalBalances(0) :- constructor().
-totalBalances(s) :- s = sum n: balanceOf(_,n).
+.decl *start(time: uint)
+.decl *end(time: uint)
+.decl *rate(r: uint)
+.decl recv_buyToken(p:address, amount: uint)
+.public recv_buyToken
+.decl buyToken(p:address, amount: uint)
+
+mint(p,n) :- recv_buyToken(p,m), p!=0, m!=0, now(t), start(s), end(e), t>s, t<e, rate(r), n:=m*r.
+
+.decl recv_finalize()
+.public recv_finalize
+.decl finalize()
+.decl *finalized(b:bool)
+
+finalize() :- recv_finalize(), msgSender(s), owner(s), finalized(false), now(t), end(e), t>e.
+finalized(false) :- finalize().
+
+.decl *onceFinalize(b:bool)
+onceFinalize(false) :- constructor().
+onceFinalize(true) :- finalize().
+
+
